@@ -16,6 +16,7 @@ import (
 
 	"github.com/sentania/vcenter-api-simulator/internal/life"
 	"github.com/sentania/vcenter-api-simulator/internal/registry"
+	"github.com/sentania/vcenter-api-simulator/internal/scenario"
 	"github.com/sentania/vcenter-api-simulator/internal/topology"
 )
 
@@ -93,11 +94,16 @@ func (s *Simulator) Life() *Life {
 		l := &Life{s: s, reg: s.model.Service.Context.Map, vms: map[string]map[string]*lifeVM{}, off: map[string]map[string]bool{}, posted: map[string]int{}, ctxs: map[string]*simulator.Context{}}
 		for _, refs := range s.Clusters {
 			idx := map[string]*lifeVM{}
+			off := map[string]bool{}
 			for i, vm := range refs.Cluster.VMs {
 				idx[vm.Name] = &lifeVM{ref: refs.VMs[i], vm: vm}
+				if vm.Role == scenario.RolePoweredOff {
+					// built powered off; Activity never powers it on
+					off[vm.Name] = true
+				}
 			}
 			l.vms[refs.Cluster.Key] = idx
-			l.off[refs.Cluster.Key] = map[string]bool{}
+			l.off[refs.Cluster.Key] = off
 		}
 		l.reg.Put(&clusterLoad{ManagedObjectReference: loadRef})
 		// vcsim's event catalogue has no words for some of what a real
@@ -627,19 +633,7 @@ func (l *Life) setPower(ctx *simulator.Context, obj *simulator.VirtualMachine, v
 			obj.Summary.Runtime = obj.Runtime
 			obj.Summary.QuickStats.UptimeSeconds = 0
 		} else {
-			obj.Runtime.PowerState = types.VirtualMachinePowerStatePoweredOff
-			obj.Runtime.BootTime = nil
-			obj.Summary.Runtime = obj.Runtime
-			obj.Guest.GuestState = string(types.VirtualMachineGuestStateNotRunning)
-			obj.Guest.ToolsStatus = types.VirtualMachineToolsStatusToolsNotRunning
-			obj.Guest.ToolsRunningStatus = string(types.VirtualMachineToolsRunningStatusGuestToolsNotRunning)
-			obj.Guest.IpAddress = ""
-			obj.Guest.GuestOperationsReady = types.NewBool(false)
-			obj.Summary.Guest.ToolsStatus = obj.Guest.ToolsStatus
-			obj.Summary.Guest.ToolsRunningStatus = obj.Guest.ToolsRunningStatus
-			obj.Summary.Guest.IpAddress = ""
-			obj.Summary.QuickStats = types.VirtualMachineQuickStats{GuestHeartbeatStatus: types.ManagedEntityStatusGray}
-			obj.GuestHeartbeatStatus = types.ManagedEntityStatusGray
+			shapeOff(obj)
 		}
 		updateLife(ctx, obj, []types.PropertyChange{
 			{Name: "runtime", Val: obj.Runtime}, {Name: "summary", Val: obj.Summary}, {Name: "guest", Val: obj.Guest}, {Name: "guestHeartbeatStatus", Val: obj.GuestHeartbeatStatus},
@@ -682,7 +676,7 @@ func (l *Life) power(cluster, name string, on bool) bool {
 // PowerOff implements life.World.
 func (l *Life) PowerOff(cluster string, pick uint64) string {
 	off := l.off[cluster]
-	names := l.names(cluster, func(vm *lifeVM) bool { return !off[vm.vm.Name] })
+	names := l.names(cluster, func(vm *lifeVM) bool { return !off[vm.vm.Name] && vm.vm.Role == "" })
 	if len(names) == 0 {
 		return ""
 	}
@@ -828,10 +822,16 @@ func (l *Life) AddVM(cluster string, pick uint64) (string, string, error) {
 			e.InstanceUuid = vm.InstanceUUID
 		}
 	}
-	ev := l.vmEvent(refs, lv, to.ref)
-	ev.Ds = nil
-	on := l.begin(ctx, ev.Event, ref, vm.Name, "PowerOnVM_Task", "VirtualMachine.powerOn", byUser())
-	l.post(ctx, on, &types.VmStartingEvent{VmEvent: ev}, &types.VmPoweredOnEvent{VmEvent: ev})
+	if vm.Role == scenario.RolePoweredOff {
+		// a new VM whose rightsizing role is powered off is left off,
+		// as a rebuild would make it
+		l.off[cluster][vm.Name] = true
+	} else {
+		ev := l.vmEvent(refs, lv, to.ref)
+		ev.Ds = nil
+		on := l.begin(ctx, ev.Event, ref, vm.Name, "PowerOnVM_Task", "VirtualMachine.powerOn", byUser())
+		l.post(ctx, on, &types.VmStartingEvent{VmEvent: ev}, &types.VmPoweredOnEvent{VmEvent: ev})
+	}
 	l.counts(ctx, refs)
 	l.space(ctx, refs)
 	if l.VMAdded != nil {
@@ -845,6 +845,10 @@ func (l *Life) AddVM(cluster string, pick uint64) (string, string, error) {
 func (l *Life) RemoveVM(cluster string, pick uint64) (string, error) {
 	refs := l.refs(cluster)
 	names := l.names(cluster, func(vm *lifeVM) bool {
+		if vm.vm.Role != "" {
+			// a VM with a rightsizing role stays for capacity tools to find
+			return false
+		}
 		ctx := l.as("")
 		_, maint, down := l.hostState(ctx, l.hostOf(ctx, vm))
 		if maint || down {
@@ -1222,7 +1226,7 @@ func (l *Life) Snapshot() Live {
 			if h := name[l.hostOf(ctx, vm)]; h != "" && h != cl.Hosts[vm.vm.Host%len(cl.Hosts)].Name {
 				out.Hosts[vm.vm.Key] = h
 			}
-			if l.off[cl.Key][vm.vm.Name] {
+			if l.off[cl.Key][vm.vm.Name] && vm.vm.Role != scenario.RolePoweredOff {
 				out.Off = append(out.Off, vm.vm.Key)
 			}
 		}

@@ -18,10 +18,12 @@ package topology
 
 import (
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"fmt"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	"github.com/sentania/vcenter-api-simulator/internal/registry"
 	"github.com/sentania/vcenter-api-simulator/internal/scenario"
@@ -101,6 +103,8 @@ type Cluster struct {
 	Spec          scenario.ClusterSpec // the effective cardinality after defaults, draws and overrides
 	// VMHigh is the highest VM number the cluster has ever used.
 	VMHigh int
+	// VMRoles is the per-VM roles the scenario pins, by VM number.
+	VMRoles map[int]string
 
 	// live, when set, is the VM list as Activity has changed it since the
 	// inventory was built. VMs stays as built; everything that answers a
@@ -260,6 +264,75 @@ type VM struct {
 	NamespaceUUID string // the VM home namespace directory on the vSAN datastore
 	Host          int    // index into Cluster.Hosts
 	Disks         []*VDisk
+	// Role is what the VM shows capacity tools: "" (as built) or one of
+	// scenario.Roles. CPUs and MemoryMB are its configured size.
+	Role     string
+	CPUs     int
+	MemoryMB int
+	// SnapshotAge and SnapshotBytes describe the old snapshot of a VM with
+	// the oldSnapshot role: how long before the simulator started it was
+	// taken, and how much space its files take.
+	SnapshotAge   time.Duration
+	SnapshotBytes int64
+	SnapshotName  string
+}
+
+// VM sizes: every VM is built with 2 vCPUs and 4 GiB, except oversized VMs,
+// which are given far more than their workload uses.
+const (
+	VMCPUs              = 2
+	VMMemoryMB          = 4096
+	OversizedCPUs       = 8
+	OversizedMemoryMB   = 32768
+	roleHashSpace       = 10000
+	snapshotMinGB       = 5
+	snapshotMaxGB       = 40
+	roleHashKind        = "rightsizing-role"
+	snapshotHashKind    = "rightsizing-snapshot"
+	snapshotSizeHashKey = "rightsizing-snapshot-size"
+)
+
+var snapshotNames = []string{"Before patching", "Before application upgrade", "Pre-change backup", "Test snapshot", "Before driver update"}
+
+// assignRole gives a VM its role, size and old snapshot. A VM the cluster
+// pins keeps that role; the others are dealt from the cluster's shares by a
+// hash of the VM's identity, so a VM keeps its role across restarts.
+func assignRole(cl *Cluster, vm *VM, n int) {
+	vm.CPUs, vm.MemoryMB = VMCPUs, VMMemoryMB
+	rs := cl.Spec.VMs.Rightsizing
+	if pinned, ok := cl.VMRoles[n]; ok {
+		if pinned != scenario.RoleNormal {
+			vm.Role = pinned
+		}
+	} else if rs != nil {
+		// the hash places the VM on 0..9999; the roles take consecutive
+		// slices of that line in the fixed order of scenario.Roles
+		at := hashNumber(vm.Key, roleHashKind) % roleHashSpace
+		edge := uint64(0)
+		for _, role := range scenario.Roles {
+			edge += uint64(rs.Share(role)) * roleHashSpace / 100
+			if at < edge {
+				vm.Role = role
+				break
+			}
+		}
+	}
+	switch vm.Role {
+	case scenario.RoleOversized:
+		vm.CPUs, vm.MemoryMB = OversizedCPUs, OversizedMemoryMB
+	case scenario.RoleOldSnapshot:
+		age := rs.SnapshotAge()
+		days := age.Min + int(hashNumber(vm.Key, snapshotHashKind)%uint64(age.Max-age.Min+1))
+		vm.SnapshotAge = time.Duration(days) * 24 * time.Hour
+		gb := snapshotMinGB + int64(hashNumber(vm.Key, snapshotSizeHashKey)%(snapshotMaxGB-snapshotMinGB+1))
+		vm.SnapshotBytes = gb << 30
+		vm.SnapshotName = snapshotNames[hashNumber(vm.Key, snapshotHashKind+"-name")%uint64(len(snapshotNames))]
+	}
+}
+
+func hashNumber(key, kind string) uint64 {
+	sum := sha256.Sum256([]byte(key + "|" + kind))
+	return binary.BigEndian.Uint64(sum[:8])
 }
 
 // VDisk is one virtual disk of a VM.
@@ -421,6 +494,7 @@ func generateCluster(s *scenario.Scenario, r *registry.Registry, dc *Datacenter,
 	} else {
 		cl.Datastore = fmt.Sprintf("vsanDatastore (%d)", n-1)
 	}
+	cl.VMRoles = s.VMRoles(key)
 	removed := s.RemovedHosts(key)
 	for hi := 1; hi <= spec.Hosts; hi++ {
 		if removed[hi] {
@@ -574,6 +648,7 @@ func generateVM(r *registry.Registry, cl *Cluster, n int) *VM {
 	vm.UUID = r.UUID("vm-smbios", vm.Serial)
 	vm.InstanceUUID = r.UUID("vm-instance", vm.Serial)
 	vm.NamespaceUUID = r.UUID("vm-namespace", vm.Serial)
+	assignRole(cl, vm, n)
 	// A VMDK path carries the VM name on a real vCenter too
 	// ("[ds] <namespace>/<vm>.vmdk"); the pack joins it to the VM through
 	// backing.fileName, never through the name, so this is the one

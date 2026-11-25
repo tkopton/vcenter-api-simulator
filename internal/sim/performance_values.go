@@ -74,7 +74,13 @@ func valueAt(c types.PerfCounterInfo, n *workloadNode, w workload) (int64, bool)
 		return max(0, w.memCap-w.memory) * 1024 / 10, true
 	case "mem.overhead", "mem.capacity.usage.vmOvrhd":
 		return w.memory * 1024 / 40, true
-	case "mem.swapused", "mem.swapped", "mem.swaptarget", "mem.swapinRate", "mem.swapoutRate", "mem.vmmemctl", "mem.compressed", "mem.compressionRate", "mem.decompressionRate", "mem.capacity.contention", "mem.state":
+	case "mem.vmmemctl":
+		return w.balloon * 1024, true
+	case "mem.swapped", "mem.swapused", "mem.swaptarget":
+		return w.swapped * 1024, true
+	case "mem.swapinRate":
+		return w.swapped / 64, true // KBps: a VM short of memory keeps paging
+	case "mem.swapoutRate", "mem.compressed", "mem.compressionRate", "mem.decompressionRate", "mem.capacity.contention", "mem.state":
 		return 0, true
 	case "disk.used", "disk.provisioned", "disk.unshared", "disk.capacity.provisioned", "disk.capacity.usage":
 		return n.used, true

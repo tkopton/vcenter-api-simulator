@@ -35,6 +35,7 @@ type workloadNode struct {
 	// 1 is as built.
 	loadCPU, loadMem float64
 	boot             time.Time
+	role             string // a VM's rightsizing role, "" as built
 }
 
 func readPerformanceState(ctx *simulator.Context) *performanceState {
@@ -94,6 +95,7 @@ func readPerformanceSubset(ctx *simulator.Context, selected *perfRef) *performan
 					}
 					n.cpus = int(o.Summary.Config.NumCpu)
 					n.cpuInstances = n.cpus
+					n.role = roleOf(ctx, o.Self)
 					n.memory = int64(o.Summary.Config.MemorySizeMB)
 					n.datastores = append([]perfRef(nil), o.Datastore...)
 					if o.Runtime.BootTime != nil {
@@ -184,6 +186,7 @@ type workload struct {
 	latency                           int64 // microseconds, weighted by IOPS at aggregation
 	ios                               int64
 	cpuCap, memCap, vcpus             int64
+	balloon, swapped                  int64 // MiB
 }
 
 func (w *workload) add(v workload) {
@@ -201,6 +204,8 @@ func (w *workload) add(v workload) {
 	w.latency += v.latency
 	w.ios += v.ios
 	w.vcpus += v.vcpus
+	w.balloon += v.balloon
+	w.swapped += v.swapped
 }
 func seedNumber(seed, identity string) uint64 {
 	h := fnv.New64a()
@@ -251,6 +256,7 @@ func vmWorkload(seed string, n *workloadNode, t time.Time, cpuScale, memScale fl
 	w.wait = max(0, 20000*int64(n.cpus)-w.usedCPU-w.ready)
 	w.ios = max(1, (w.read+w.write)/32)
 	w.latency = int64(900+4000*usage+35000*pulse) * w.ios
+	roleWorkload(n.role, n, &w, day, drift, cpuScale, memScale)
 	return w
 }
 

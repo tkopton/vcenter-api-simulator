@@ -8,6 +8,7 @@ import (
 	"github.com/vmware/govmomi/vim25/types"
 
 	"github.com/sentania/vcenter-api-simulator/internal/catalog"
+	"github.com/sentania/vcenter-api-simulator/internal/scenario"
 	"github.com/sentania/vcenter-api-simulator/internal/topology"
 )
 
@@ -226,11 +227,17 @@ func shapeClusterSummary(obj *simulator.ClusterComputeResource, cl *topology.Clu
 	sum.CurrentFailoverLevel = 1
 	sum.AdmissionControlInfo = &types.ClusterFailoverResourcesAdmissionControlInfo{CurrentCpuFailoverResourcesPercent: 95, CurrentMemoryFailoverResourcesPercent: 90}
 	sum.DrsScore = 97
-	sum.NumVmsPerDrsScoreBucket = []int32{0, 0, 0, 0, int32(len(cl.VMs))}
+	off := int32(0)
+	for _, vm := range cl.VMs {
+		if vm.Role == scenario.RolePoweredOff {
+			off++
+		}
+	}
+	sum.NumVmsPerDrsScoreBucket = []int32{0, 0, 0, 0, int32(len(cl.VMs)) - off}
 	sum.UsageSummary = &types.ClusterUsageSummary{
 		TotalCpuCapacityMhz: sum.EffectiveCpu, TotalMemCapacityMB: int32(sum.EffectiveMemory),
 		CpuDemandMhz: int32(len(cl.VMs)) * 900, MemDemandMB: int32(len(cl.VMs)) * 4096,
-		TotalVmCount: int32(len(cl.VMs)), PoweredOffVmCount: 0,
+		TotalVmCount: int32(len(cl.VMs)), PoweredOffVmCount: off,
 	}
 	sum.ClusterMaintenanceModeStatus = "notInMaintenanceMode"
 	sum.VcsHealthStatus = "healthy"
@@ -384,8 +391,8 @@ func shapeVM(obj *simulator.VirtualMachine, cl *topology.Cluster, vm *topology.V
 	obj.Runtime.FaultToleranceState = types.VirtualMachineFaultToleranceStateNotConfigured
 	obj.Runtime.RecordReplayState = types.VirtualMachineRecordReplayStateInactive
 	obj.Runtime.BootTime = &boot
-	obj.Runtime.MaxCpuUsage = 2 * cpuMhz
-	obj.Runtime.MaxMemoryUsage = 4096
+	obj.Runtime.MaxCpuUsage = int32(vm.CPUs) * cpuMhz
+	obj.Runtime.MaxMemoryUsage = int32(vm.MemoryMB)
 	obj.Summary.Runtime = obj.Runtime
 	obj.Guest.GuestState = "running"
 	obj.Guest.GuestId = obj.Config.GuestId

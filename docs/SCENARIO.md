@@ -133,6 +133,13 @@ defaults:                   # per-cluster defaults (built-in values shown)
   vms:
     perHost: 2
     disksPerVM: 1           # virtual-disk and vscsi entities per VM
+    rightsizing:            # optional; % of VMs given a lasting role, see "Rightsizing and reclamation"
+      idle: 10              #   well under 100 MHz, almost no I/O
+      poweredOff: 5         #   built powered off and left off
+      oversized: 20         #   8 vCPU / 32 GiB, using a few percent of it
+      undersized: 10        #   CPU flat out with ready time, memory full, ballooning and swapping
+      oldSnapshots: 10      #   a snapshot taken days before the simulator started
+      snapshotAgeDays: {min: 20, max: 120}
 
 vary:                       # each generated cluster draws its own values with
   hosts: [4, 6, 8, 8, 12]   #   its own seed; a list is a weighted choice
@@ -148,6 +155,7 @@ clusters:                   # explicit overrides win over draws and defaults;
     host: {domWorlds: 140}
     seedEpoch: 0            # above 0: this cluster gets its own telemetry seed
                             #   (every sample changes, no identity does)
+    vmRoles: {7: undersized, 12: normal}   # pin single VMs by number; normal pins no role
 
 removed:                    # generated clusters left out (the console's Delete);
   - dc-01/cluster-07        #   the others keep their numbers and the removed
@@ -218,6 +226,38 @@ Latency and timeout holds are applied before the request reaches the
 service, so a hold on one cluster or family never delays another cluster's
 queries (vcsim answers each managed object under a lock, and the
 Performance Manager is one object for every cluster).
+
+## Rightsizing and reclamation
+
+`vms.rightsizing` gives a share of each cluster's VMs a role that capacity tools
+such as VCF Operations look for: reclamation (idle VMs, powered-off VMs, old
+snapshots) and rightsizing (oversized and undersized VMs). The shares are
+percentages, a VM has one role, and the shares add up to at most 100.
+
+| Role | Configured | What a tool sees |
+|---|---|---|
+| `idle` | 2 vCPU, 4 GiB | CPU usage well under 100 MHz, memory about 12% used, almost no disk or network I/O |
+| `poweredOff` | 2 vCPU, 4 GiB | powered off from the start: no boot time, guest not running, zero quick stats and no performance samples |
+| `oversized` | 8 vCPU, 32 GiB | CPU usage and demand 3 to 7%, memory 12 to 18% used |
+| `undersized` | 2 vCPU, 4 GiB | CPU demand at the VM's full capacity and usage near it, 8 to 15% ready time, memory 97% used with ballooning and swapping |
+| `oldSnapshot` | 2 vCPU, 4 GiB | one snapshot (a real snapshot object, tree and files) dated `snapshotAgeDays` back from when the simulator started, its file 5 to 40 GB |
+
+Which VMs get a role is decided by a hash of each VM's identity, never by the
+other VMs, so a VM keeps its role across restarts and when VMs come and go. With
+few VMs the counts are near the shares rather than exact; `vmRoles` on a
+cluster's entry pins single VMs by number (`normal` pins a VM to no role). The
+roles take consecutive slices of the hash in the order of the table, so changing
+one share can move VMs between that role and the ones below it. A role does not
+follow Activity's CPU and memory dials, and Activity does not power off, remove
+or back up a VM with a role, so a role lasts while Activity runs. A snapshot's
+age counts from when the simulator starts, so a restart makes it as old as the
+scenario says again.
+
+VCF Operations judges most roles from what it has collected, so they show only
+after the VM has been that way for the period its settings ask (Administration,
+Global Settings, Reclamation, and the policy's rightsizing settings): lower those
+periods for a lab. It ranks a powered-off or idle VM above its snapshots, which
+is why an old snapshot is a role of its own.
 
 ## Sizing a scenario
 

@@ -248,6 +248,9 @@ each dial a sentence says what its position means in numbers.
   number stays as typed whatever the size of the environment. One VM every so often
   is spread evenly over day and night. An exact number of vMotions a day still
   comes in bursts, more in working hours. Moving the dial goes back to a level.
+- **VMs with a rightsizing role** (scenario `vms.rightsizing` and `vmRoles`) are
+  left alone: Activity does not power them off, remove them or back them up, and
+  the load dials do not change them. They still move between hosts.
 - **Limits.** The number of VMs stays between two numbers, 5% below and above the
   number there was before Activity changed anything unless you change them. They
   move with clusters and hosts you add or remove. At a limit, adding or removing

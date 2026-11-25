@@ -15,7 +15,11 @@ import (
 
 var _ life.JobWorld = (*Life)(nil)
 
-func (l *Life) VMNames(cluster string) []string { return l.names(cluster, nil) }
+// VMNames is the VMs Activity's backups take snapshots of: not those with a
+// rightsizing role, whose old snapshot or state a backup would disturb.
+func (l *Life) VMNames(cluster string) []string {
+	return l.names(cluster, func(vm *lifeVM) bool { return vm.vm.Role == "" })
+}
 
 const backupName = "Activity nightly backup"
 

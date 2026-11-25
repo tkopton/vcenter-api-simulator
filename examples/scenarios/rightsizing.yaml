@@ -1,0 +1,28 @@
+# Rightsizing and reclamation: two clusters whose VMs give VCF Operations
+# idle, powered-off, oversized and undersized VMs and old snapshots to find.
+# See docs/SCENARIO.md, "Rightsizing and reclamation".
+seed: rightsizing
+
+datacenters:
+  - name: dc-01
+    clusters: 2
+
+defaults:
+  hosts: 4
+  host: {threads: 32, domWorlds: 12, vsanPnics: 2, claimedDevices: 1, localDevices: 1}
+  vms:
+    perHost: 6
+    disksPerVM: 1
+    rightsizing:
+      idle: 10
+      poweredOff: 10
+      oversized: 15
+      undersized: 10
+      oldSnapshots: 10
+      snapshotAgeDays: {min: 20, max: 120}
+
+clusters:
+  - key: dc-01/cluster-02
+    vms:
+      rightsizing: {oversized: 30, undersized: 20}
+    vmRoles: {1: poweredOff, 2: oldSnapshot}

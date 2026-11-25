@@ -780,8 +780,8 @@ func (s *Simulator) createVM(ctx *simulator.Context, refs *ClusterRefs, vm *topo
 		Files: &types.VirtualMachineFileInfo{
 			VmPathName: fmt.Sprintf("[%s] %s/%s.vmx", cl.Datastore, vm.NamespaceUUID, vm.Name),
 		},
-		NumCPUs:  2,
-		MemoryMB: 4096,
+		NumCPUs:  int32(vm.CPUs),
+		MemoryMB: int64(vm.MemoryMB),
 		Version:  "vmx-21",
 	}
 	var devices object.VirtualDeviceList
@@ -822,7 +822,14 @@ func (s *Simulator) createVM(ctx *simulator.Context, refs *ClusterRefs, vm *topo
 		obj.Summary.Config.Uuid = vm.UUID
 		obj.Summary.Config.InstanceUuid = vm.InstanceUUID
 		shapeVM(obj, cl, vm, s.Env.Now)
+		if vm.Role == scenario.RolePoweredOff {
+			shapeOff(obj)
+		}
 	})
+	setRole(ctx, ref, vm.Role)
+	if err := s.takeOldSnapshot(ctx, obj, vm); err != nil {
+		return err
+	}
 	refs.VMs = append(refs.VMs, ref)
 	return nil
 }

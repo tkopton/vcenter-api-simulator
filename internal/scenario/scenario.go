@@ -181,6 +181,103 @@ type HostSpec struct {
 type VMSpec struct {
 	PerHost    *int `yaml:"perHost" json:"perHost,omitempty"`
 	DisksPerVM int  `yaml:"disksPerVM" json:"disksPerVM,omitempty"`
+	// Rightsizing gives a share of the VMs a lasting role for capacity
+	// tools to find: idle, powered off, oversized, undersized or carrying an
+	// old snapshot. Nil leaves every VM as built.
+	Rightsizing *Rightsizing `yaml:"rightsizing,omitempty" json:"rightsizing,omitempty"`
+}
+
+// VM roles. A VM has at most one; the empty role is a VM as built.
+const (
+	RoleNormal      = "normal"
+	RoleIdle        = "idle"
+	RolePoweredOff  = "poweredOff"
+	RoleOversized   = "oversized"
+	RoleUndersized  = "undersized"
+	RoleOldSnapshot = "oldSnapshot"
+)
+
+// Roles lists the roles a VM can be given, in the order shares are dealt.
+var Roles = []string{RoleIdle, RolePoweredOff, RoleOversized, RoleUndersized, RoleOldSnapshot}
+
+// Rightsizing is the percentage of a cluster's VMs given each role. The
+// roles are exclusive and add up to at most 100. Which VMs get a role is
+// decided by a hash of each VM's identity, never by the other VMs, so a VM
+// keeps its role across restarts and when VMs come and go; with few VMs the
+// counts are near the shares rather than exact (vmRoles pins exact VMs).
+// The roles take consecutive slices of the hash in the order of Roles, so
+// changing one share can move VMs between that role and the ones after it.
+type Rightsizing struct {
+	Idle         int `yaml:"idle,omitempty" json:"idle,omitempty"`
+	PoweredOff   int `yaml:"poweredOff,omitempty" json:"poweredOff,omitempty"`
+	Oversized    int `yaml:"oversized,omitempty" json:"oversized,omitempty"`
+	Undersized   int `yaml:"undersized,omitempty" json:"undersized,omitempty"`
+	OldSnapshots int `yaml:"oldSnapshots,omitempty" json:"oldSnapshots,omitempty"`
+	// SnapshotAgeDays is how old an old snapshot is when the simulator
+	// starts; each VM gets a fixed age in the range. Default 20 to 120.
+	SnapshotAgeDays *Range `yaml:"snapshotAgeDays,omitempty" json:"snapshotAgeDays,omitempty"`
+}
+
+// Share is the percentage of VMs given a role.
+func (r *Rightsizing) Share(role string) int {
+	if r == nil {
+		return 0
+	}
+	switch role {
+	case RoleIdle:
+		return r.Idle
+	case RolePoweredOff:
+		return r.PoweredOff
+	case RoleOversized:
+		return r.Oversized
+	case RoleUndersized:
+		return r.Undersized
+	case RoleOldSnapshot:
+		return r.OldSnapshots
+	}
+	return 0
+}
+
+// SnapshotAge is the range of old-snapshot ages in days, with its default.
+func (r *Rightsizing) SnapshotAge() Range {
+	if r == nil || r.SnapshotAgeDays == nil {
+		return Range{Min: 20, Max: 120}
+	}
+	return *r.SnapshotAgeDays
+}
+
+func (r *Rightsizing) check(where string) error {
+	if r == nil {
+		return nil
+	}
+	total := 0
+	for _, role := range Roles {
+		v := r.Share(role)
+		if v < 0 || v > 100 {
+			return fmt.Errorf("scenario: %s: vms.rightsizing.%s must be a percentage from 0 to 100", where, role)
+		}
+		total += v
+	}
+	if total > 100 {
+		return fmt.Errorf("scenario: %s: vms.rightsizing shares add up to %d%%; a VM has one role, so they must add up to at most 100", where, total)
+	}
+	if a := r.SnapshotAgeDays; a != nil && (a.Min < 1 || a.Max < a.Min || a.Max > 3650) {
+		return fmt.Errorf("scenario: %s: vms.rightsizing.snapshotAgeDays must be from 1 to 3650 days, min no more than max", where)
+	}
+	return nil
+}
+
+// ValidRole reports whether a per-VM role is one the simulator knows.
+func ValidRole(role string) bool {
+	if role == RoleNormal {
+		return true
+	}
+	for _, r := range Roles {
+		if r == role {
+			return true
+		}
+	}
+	return false
 }
 
 // Int dereferences an optional count; nil is 0.
@@ -252,7 +349,10 @@ type ClusterOverride struct {
 	// VMHigh is the highest VM number the cluster has ever used, kept when
 	// the lists and the hosts no longer say so (hosts were removed), so
 	// that the next VM Activity adds never takes a number used before.
-	VMHigh      int `yaml:"vmHigh,omitempty" json:"vmHigh,omitempty"`
+	VMHigh int `yaml:"vmHigh,omitempty" json:"vmHigh,omitempty"`
+	// VMRoles pins the role of single VMs by number (1 is <cluster>-vm-001),
+	// over what vms.rightsizing deals them; "normal" pins a VM to no role.
+	VMRoles     map[int]string `yaml:"vmRoles,omitempty" json:"vmRoles,omitempty"`
 	ClusterSpec `yaml:",inline" json:",omitempty"`
 }
 
@@ -574,6 +674,11 @@ func (s *Scenario) Validate() error {
 		if c.VMHigh < 0 {
 			return fmt.Errorf("scenario: clusters[%s]: vmHigh must not be negative", c.Key)
 		}
+		for n, role := range c.VMRoles {
+			if n < 1 || !ValidRole(role) {
+				return fmt.Errorf("scenario: clusters[%s]: vmRoles: %d: %q is not a VM number and role (roles: normal, idle, poweredOff, oversized, undersized, oldSnapshot)", c.Key, n, role)
+			}
+		}
 		for name, list := range map[string][]int{"removedVMs": c.RemovedVMs, "addedVMs": c.AddedVMs} {
 			seen := map[int]bool{}
 			for _, n := range list {
@@ -746,7 +851,7 @@ func (c ClusterSpec) check(where string) error {
 	case c.VMs.DisksPerVM < 1:
 		return fmt.Errorf("scenario: %s: vms.disksPerVM must be at least 1", where)
 	}
-	return nil
+	return c.VMs.Rightsizing.check(where)
 }
 
 // merge overlays the non-zero fields of over onto base.
@@ -788,7 +893,20 @@ func merge(base, over ClusterSpec) ClusterSpec {
 	if over.VMs.DisksPerVM != 0 {
 		out.VMs.DisksPerVM = over.VMs.DisksPerVM
 	}
+	if over.VMs.Rightsizing != nil {
+		out.VMs.Rightsizing = over.VMs.Rightsizing
+	}
 	return out
+}
+
+// VMRoles is the per-VM roles a cluster pins, by VM number.
+func (s *Scenario) VMRoles(key string) map[int]string {
+	for _, c := range s.Clusters {
+		if c.Key == key {
+			return c.VMRoles
+		}
+	}
+	return nil
 }
 
 // Override returns the explicit override for a cluster key, if any.
