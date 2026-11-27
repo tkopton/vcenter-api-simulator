@@ -825,8 +825,16 @@ func (s *Simulator) createVM(ctx *simulator.Context, refs *ClusterRefs, vm *topo
 		if vm.Role == scenario.RolePoweredOff {
 			shapeOff(obj)
 		}
+		// vcsim stamps a VM with the moment it made it, which made every VM
+		// look newly provisioned after each start; capacity tools skip new
+		// VMs when they look for idle ones
+		obj.Config.CreateDate = types.NewTime(vm.Created)
 	})
-	setRole(ctx, ref, vm.Role)
+	role := vm.Role
+	if role == "" && vm.RightSized {
+		role = roleRightSized
+	}
+	setRole(ctx, ref, role)
 	if err := s.takeOldSnapshot(ctx, obj, vm); err != nil {
 		return err
 	}

@@ -117,10 +117,17 @@ func (s *Simulator) takeOldSnapshot(ctx *simulator.Context, obj *simulator.Virtu
 	return nil
 }
 
+// roleRightSized is the workload role of a VM without a role in a cluster
+// that gives roles (topology.VM.RightSized): not a scenario role, and
+// Activity treats such a VM like any other.
+const roleRightSized = "rightSized"
+
 // roleWorkload replaces a running VM's usage with its role's, after the
 // usual model has filled the rest. A role does not follow Activity's load
-// dials, so that it stays what it is.
+// dials, so that it stays what it is; a right-sized VM does.
 func roleWorkload(role string, n *workloadNode, w *workload, day, drift, cpuScale, memScale float64) {
+	// dayN runs from 0 at night to 1 at the day's peak
+	dayN := (day - .40) / .50
 	var usage float64
 	switch role {
 	case scenario.RoleIdle:
@@ -143,16 +150,34 @@ func roleWorkload(role string, n *workloadNode, w *workload, day, drift, cpuScal
 		w.usedCPU = int64(usage * 20000 * float64(n.cpus))
 		w.ready = int64(.003 * 20000 * float64(n.cpus))
 	case scenario.RoleUndersized:
-		// CPU flat out with the guest waiting for more, memory full and
-		// under pressure
-		usage = min(.98, .9+.08*day*drift) * cpuScale
+		// The guest wants more than it has, and how much more changes with
+		// the day: a VM pinned at exactly its size would project to exactly
+		// its size, and a capacity tool would find nothing to add. CPU
+		// demand runs from 92% to 125% of the vCPUs (above 100%, as turbo
+		// boost and contention let it on a real host); the memory the guest
+		// needs fills the VM, and it pages, which counts on top.
+		want := .92 + .33*dayN*drift
+		usage = min(.98, want) * cpuScale
 		readyPct := .08 + .07*day
 		w.cpu = int64(float64(n.cpu) * usage)
-		w.demand = n.cpu
-		w.memory = int64(float64(n.memory) * .97 * memScale)
+		w.demand = int64(float64(n.cpu) * want)
+		w.memory = int64(float64(n.memory) * min(1, .96+.05*dayN)) // the guest's own need: not scaled for the host
 		w.activeMemory = w.memory * 93 / 100
 		w.balloon = n.memory * 4 / 100
 		w.swapped = n.memory * 2 / 100
+		w.read = int64(20000 + 30000*dayN) // KBps; guest paging, read back as page-ins
+		w.usedCPU = int64(usage * 20000 * float64(n.cpus))
+		w.ready = int64(readyPct * 20000 * float64(n.cpus))
+	case roleRightSized:
+		// A load the VM's size fits: CPU about half used on average and up
+		// to 80% at the day's peak, memory 74 to 88% of what it has, so a
+		// capacity tool keeps it as it is. Activity's dials still move it.
+		usage = min(.95, (.35+.45*dayN*drift)*n.loadCPU) * cpuScale
+		readyPct := .004 + .01*usage
+		w.cpu = int64(float64(n.cpu) * usage)
+		w.demand = min(n.cpu, int64(float64(w.cpu)*(1+readyPct)))
+		w.memory = min(n.memory, int64(float64(n.memory)*(.74+.14*dayN)*memScale*n.loadMem))
+		w.activeMemory = int64(float64(w.memory) * (.45 + .4*usage))
 		w.usedCPU = int64(usage * 20000 * float64(n.cpus))
 		w.ready = int64(readyPct * 20000 * float64(n.cpus))
 	default:

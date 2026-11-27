@@ -241,7 +241,7 @@ percentages, a VM has one role, and the shares add up to at most 100.
 | `idle` | 2 vCPU, 4 GiB | CPU usage well under 100 MHz, memory about 12% used, almost no disk or network I/O |
 | `poweredOff` | 2 vCPU, 4 GiB | powered off from the start: no boot time, guest not running, zero quick stats and no performance samples |
 | `oversized` | 8 vCPU, 32 GiB | CPU usage and demand 3 to 7%, memory 12 to 18% used |
-| `undersized` | 2 vCPU, 4 GiB | CPU demand at the VM's full capacity and usage near it, 8 to 15% ready time, memory 97% used with ballooning and swapping |
+| `undersized` | 2 vCPU, 4 GiB | CPU demand from 92% to 125% of the VM's capacity over the day (above 100% as turbo boost and contention allow), usage near full, 8 to 15% ready time; the memory the guest needs fills the VM, with paging, ballooning and swapping |
 | `oldSnapshot` | 2 vCPU, 4 GiB | one snapshot (a real snapshot object, tree and files) dated `snapshotAgeDays` back from when the simulator started, its file 5 to 40 GB |
 
 Which VMs get a role is decided by a hash of each VM's identity, never by the
@@ -249,7 +249,13 @@ other VMs, so a VM keeps its role across restarts and when VMs come and go. With
 few VMs the counts are near the shares rather than exact; `vmRoles` on a
 cluster's entry pins single VMs by number (`normal` pins a VM to no role). The
 roles take consecutive slices of the hash in the order of the table, so changing
-one share can move VMs between that role and the ones below it. A role does not
+one share can move VMs between that role and the ones below it. In a cluster that gives roles (`rightsizing` or `vmRoles`), a VM without a role
+carries a load its size fits: CPU about 50% on average and up to 80% at the day's
+peak, memory 74 to 88% used. So the role VMs are the ones a capacity tool singles
+out, rather than every lightly loaded VM. Clusters without roles keep the usual
+model. Every VM the builder makes reports a creation date long before the
+simulator started, the same on every start, so a tool never takes it for newly
+provisioned (idle-VM detection skips new VMs); a VM Activity adds is made now. A role does not
 follow Activity's CPU and memory dials, and Activity does not power off, remove
 or back up a VM with a role, so a role lasts while Activity runs. A snapshot's
 age counts from when the simulator starts, so a restart makes it as old as the

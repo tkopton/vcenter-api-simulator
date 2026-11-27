@@ -337,7 +337,21 @@ type VM struct {
 	SnapshotAge      time.Duration
 	OldSnapshotBytes int64
 	SnapshotName     string
+	// RightSized marks a VM without a role in a cluster that gives roles
+	// (vms.rightsizing or vmRoles): it carries a load its size fits, so the
+	// role VMs are the ones capacity tools single out.
+	RightSized bool
+	// Created is when the VM was made, as vCenter reports it. A VM the
+	// builder makes was made long before the simulator started: a fixed day
+	// less a number of days its identity decides, the same on every start.
+	Created time.Time
 }
+
+// createdBefore is the day VMs the builder makes were created before, at
+// most createdSpread days earlier.
+var createdBefore = time.Date(2025, time.January, 1, 9, 0, 0, 0, time.UTC)
+
+const createdSpread = 3 * 365
 
 // VM sizes: every VM is built with 2 vCPUs and 4 GiB, except oversized VMs,
 // which are given far more than their workload uses.
@@ -361,6 +375,8 @@ var snapshotNames = []string{"Before patching", "Before application upgrade", "P
 // hash of the VM's identity, so a VM keeps its role across restarts.
 func assignRole(cl *Cluster, vm *VM, n int) {
 	vm.CPUs, vm.MemoryMB = VMCPUs, VMMemoryMB
+	days := hashNumber(vm.Key, "created") % createdSpread
+	vm.Created = createdBefore.Add(-time.Duration(days)*24*time.Hour - time.Duration(hashNumber(vm.Key, "created-at")%36000)*time.Second)
 	rs := cl.Spec.VMs.Rightsizing
 	if pinned, ok := cl.VMRoles[n]; ok {
 		if pinned != scenario.RoleNormal {
@@ -379,6 +395,7 @@ func assignRole(cl *Cluster, vm *VM, n int) {
 			}
 		}
 	}
+	vm.RightSized = vm.Role == "" && (rs != nil || len(cl.VMRoles) > 0)
 	switch vm.Role {
 	case scenario.RoleOversized:
 		vm.CPUs, vm.MemoryMB = OversizedCPUs, OversizedMemoryMB

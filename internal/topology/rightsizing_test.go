@@ -75,11 +75,25 @@ func TestRightsizingRoles(t *testing.T) {
 		t.Fatalf("pinned roles %q %q", vms[0].Role, vms[1].Role)
 	}
 
-	// no shares: every VM as built
+	// a VM without a role in a cluster that gives roles carries a load its
+	// size fits; the creation date is the same on every build and long past
+	for i, vm := range pinned.Datacenters[0].Clusters[0].VMs {
+		if vm.RightSized != (vm.Role == "") {
+			t.Errorf("%s (%q): right-sized %v", vm.Name, vm.Role, vm.RightSized)
+		}
+		if again := Generate(rightsizingScenario(t, rs, map[int]string{1: scenario.RoleUndersized, 2: scenario.RoleNormal}), registry.InMemory(sc.Seed)).Datacenters[0].Clusters[0].VMs[i]; !again.Created.Equal(vm.Created) || !vm.Created.Before(createdBefore.Add(time.Second)) || vm.Created.Before(createdBefore.AddDate(-4, 0, 0)) {
+			t.Errorf("%s created %v, then %v", vm.Name, vm.Created, again.Created)
+		}
+		if i > 3 {
+			break
+		}
+	}
+
+	// no shares and no pins: every VM as built
 	plain := Generate(rightsizingScenario(t, nil, nil), registry.InMemory(sc.Seed))
 	for _, vm := range plain.Datacenters[0].Clusters[0].VMs {
-		if vm.Role != "" || vm.CPUs != VMCPUs || vm.MemoryMB != VMMemoryMB {
-			t.Fatalf("%s without shares: role %q, %d vCPU %d MB", vm.Name, vm.Role, vm.CPUs, vm.MemoryMB)
+		if vm.Role != "" || vm.RightSized || vm.CPUs != VMCPUs || vm.MemoryMB != VMMemoryMB {
+			t.Fatalf("%s without shares: role %q, right-sized %v, %d vCPU %d MB", vm.Name, vm.Role, vm.RightSized, vm.CPUs, vm.MemoryMB)
 		}
 	}
 }

@@ -801,8 +801,10 @@ func (l *Life) AddVM(cluster string, pick uint64) (string, string, error) {
 	cl.SetLiveVMs(append(append([]*topology.VM(nil), cl.LiveVMs()...), vm))
 	obj := l.reg.Get(ref).(*simulator.VirtualMachine)
 	l.publishMembership(ctx, obj, true)
-	// the builder shaped the VM after vcsim announced it; say what it is now
+	// the builder shaped the VM after vcsim announced it; say what it is now,
+	// made now rather than on the builder's long-ago day
 	ctx.WithLock(obj, func() {
+		obj.Config.CreateDate = types.NewTime(l.now())
 		updateLife(ctx, obj, append([]types.PropertyChange{{Name: "config", Val: obj.Config}, {Name: "runtime", Val: obj.Runtime}, {Name: "summary", Val: obj.Summary}, {Name: "guest", Val: obj.Guest}}, storageChanges(obj)...))
 	})
 	var made types.ManagedObjectReference

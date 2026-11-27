@@ -56,6 +56,9 @@ func TestRightsizingRolesInInventoryAndPerformance(t *testing.T) {
 			if int(cpus) != vm.CPUs || int(mem) != vm.MemoryMB {
 				t.Errorf("%s: configured %d vCPU %d MB, topology says %d %d", vm.Name, cpus, mem, vm.CPUs, vm.MemoryMB)
 			}
+			if obj.Config.CreateDate == nil || !obj.Config.CreateDate.Equal(vm.Created) || !vm.Created.Before(now.AddDate(0, 0, -30)) {
+				t.Errorf("%s: created %v, topology says %v", vm.Name, obj.Config.CreateDate, vm.Created)
+			}
 			if obj.Runtime.MaxCpuUsage != int32(vm.CPUs)*cpuMhz {
 				t.Errorf("%s: maxCpuUsage %d", vm.Name, obj.Runtime.MaxCpuUsage)
 			}
@@ -76,7 +79,7 @@ func TestRightsizingRolesInInventoryAndPerformance(t *testing.T) {
 					t.Errorf("%s oversized: %d of %d MHz, %d of %d MB", vm.Name, w.cpu, w.cpuCap, w.memory, w.memCap)
 				}
 			case scenario.RoleUndersized:
-				if w.demand != w.cpuCap || w.memory*10 < w.memCap*9 || w.balloon == 0 || w.swapped == 0 || w.ready*100 < 8*20000*w.vcpus {
+				if w.demand < w.cpuCap*9/10 || w.memory*10 < w.memCap*9 || w.balloon == 0 || w.swapped == 0 || w.ready*100 < 8*20000*w.vcpus {
 					t.Errorf("%s undersized: demand %d of %d MHz, %d of %d MB, balloon %d swapped %d, ready %d ms", vm.Name, w.demand, w.cpuCap, w.memory, w.memCap, w.balloon, w.swapped, w.ready)
 				}
 			case scenario.RoleOldSnapshot:
@@ -165,4 +168,93 @@ func TestActivityLeavesRoleVMsAlone(t *testing.T) {
 			t.Errorf("saved state powers %s off again on restore", k)
 		}
 	}
+}
+
+// Over a whole day, an undersized VM wants more than it has, by an amount
+// that changes, so a projection lands above its size; a VM without a role in
+// a cluster that gives roles carries a load its size fits.
+func TestRightsizingLoadsOverADay(t *testing.T) {
+	s := rightsizingSim(t)
+	ctx := s.Life().as("")
+	st := readPerformanceState(ctx)
+	start := s.Env.Now()
+	type span struct{ lo, hi, sum, n int64 }
+	add := func(sp *span, v int64) {
+		if sp.n == 0 || v < sp.lo {
+			sp.lo = v
+		}
+		sp.hi = max(sp.hi, v)
+		sp.sum += v
+		sp.n++
+	}
+	under, fit := map[string]*[3]span{}, map[string]*[2]span{}
+	caps := map[string][2]int64{}
+	for i := 0; i < 24*12; i++ { // every 5 minutes for a day
+		w := st.sample(s.Topology.TelemetrySeed, start.Add(time.Duration(i)*5*time.Minute))
+		for _, refs := range s.Clusters {
+			for j, vm := range refs.Cluster.VMs {
+				v := w[refs.VMs[j]]
+				caps[vm.Name] = [2]int64{v.cpuCap, v.memCap}
+				switch {
+				case vm.Role == scenario.RoleUndersized:
+					if under[vm.Name] == nil {
+						under[vm.Name] = &[3]span{}
+					}
+					add(&under[vm.Name][0], v.demand)
+					add(&under[vm.Name][1], v.memory)
+					add(&under[vm.Name][2], v.read)
+				case vm.RightSized:
+					if fit[vm.Name] == nil {
+						fit[vm.Name] = &[2]span{}
+					}
+					add(&fit[vm.Name][0], v.cpu)
+					add(&fit[vm.Name][1], v.memory)
+				}
+			}
+		}
+	}
+	if len(under) == 0 || len(fit) == 0 {
+		t.Fatalf("%d undersized and %d right-sized VMs", len(under), len(fit))
+	}
+	for name, sp := range under {
+		c := caps[name]
+		if sp[0].hi*100 < c[0]*115 || sp[0].hi-sp[0].lo < c[0]/10 || sp[1].hi < c[1] || sp[2].lo < 20000 {
+			t.Errorf("%s undersized: demand %d..%d of %d MHz, memory up to %d of %d MB, paging from %d KBps", name, sp[0].lo, sp[0].hi, c[0], sp[1].hi, c[1], sp[2].lo)
+		}
+	}
+	for name, sp := range fit {
+		c := caps[name]
+		avg, peak := sp[0].sum*100/sp[0].n/c[0], sp[0].hi*100/c[0]
+		mem := sp[1].hi * 100 / c[1]
+		// a host overcommitted on vCPUs scales every VM down, so allow less
+		if avg < 25 || avg > 65 || peak < 50 || peak > 85 || mem < 55 || mem > 90 {
+			t.Errorf("%s right-sized: CPU average %d%%, peak %d%%, memory up to %d%%", name, avg, peak, mem)
+		}
+	}
+}
+
+// A VM Activity adds is made now; the builder's VMs were made long ago.
+func TestActivityAddedVMIsNew(t *testing.T) {
+	s := rightsizingSim(t)
+	l := s.Life()
+	key := s.Clusters[0].Cluster.Key
+	name, _, err := l.AddVM(key, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := l.as("")
+	refs := s.Clusters[0]
+	for _, ref := range refs.VMs {
+		obj := l.reg.Get(ref).(*simulator.VirtualMachine)
+		var n string
+		var created *time.Time
+		ctx.WithLock(obj, func() { n, created = obj.Name, obj.Config.CreateDate })
+		if n == name {
+			if created == nil || l.now().Sub(*created) > time.Minute {
+				t.Fatalf("%s added by Activity reports creation at %v, now is %v", name, created, l.now())
+			}
+			return
+		}
+	}
+	t.Fatalf("added VM %s not found", name)
 }
