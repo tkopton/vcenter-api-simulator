@@ -77,7 +77,9 @@ func heard(t *testing.T, resized chan struct{}) {
 }
 
 // VCF Operations' "Set CPU Count and Memory for VM" action snapshots the
-// VM, powers it off, reconfigures it and powers it on again. The VM must
+// VM, shuts its guest down (it checks that VMware Tools are installed, and
+// powers off only a VM without them), waits for it to be off, reconfigures
+// it and powers it on again. The VM must
 // then be that size everywhere a tool reads it, the simulator must report
 // the size to keep, and the undersized VM's workload must fit its new size.
 func TestToolResizesAnUndersizedVM(t *testing.T) {
@@ -96,13 +98,34 @@ func TestToolResizesAnUndersizedVM(t *testing.T) {
 	ctx := context.Background()
 	vm := object.NewVirtualMachine(c, ref)
 	waitTask(t, "snapshot")(vm.CreateSnapshot(ctx, "VCF Operations rightsizing", "", false, false))
-	waitTask(t, "power off")(vm.PowerOff(ctx))
+	var tools mo.VirtualMachine
+	if err := property.DefaultCollector(c).RetrieveOne(ctx, ref, []string{"config.tools", "guest.toolsVersion"}, &tools); err != nil {
+		t.Fatal(err)
+	}
+	if tools.Config.Tools == nil || tools.Config.Tools.ToolsVersion == 0 || tools.Guest.ToolsVersion == "" {
+		t.Fatalf("no VMware Tools version: config.tools %+v, guest.toolsVersion %q", tools.Config.Tools, tools.Guest.ToolsVersion)
+	}
+	if err := vm.ShutdownGuest(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for end := time.Now().Add(5 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+		state, err := vm.PowerState(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if state == types.VirtualMachinePowerStatePoweredOff {
+			break
+		}
+		if time.Now().After(end) {
+			t.Fatalf("the guest did not shut down: %s", state)
+		}
+	}
 	var off mo.VirtualMachine
 	if err := property.DefaultCollector(c).RetrieveOne(ctx, ref, []string{"guest", "runtime"}, &off); err != nil {
 		t.Fatal(err)
 	}
 	if off.Guest.GuestState != string(types.VirtualMachineGuestStateNotRunning) || off.Guest.ToolsRunningStatus != string(types.VirtualMachineToolsRunningStatusGuestToolsNotRunning) || off.Runtime.BootTime != nil {
-		t.Errorf("powered off by a tool: guest %s, tools %s, boot %v", off.Guest.GuestState, off.Guest.ToolsRunningStatus, off.Runtime.BootTime)
+		t.Errorf("shut down by a tool: guest %s, tools %s, boot %v", off.Guest.GuestState, off.Guest.ToolsRunningStatus, off.Runtime.BootTime)
 	}
 	waitTask(t, "reconfigure")(vm.Reconfigure(ctx, types.VirtualMachineConfigSpec{NumCPUs: 4, MemoryMB: 8192}))
 	heard(t, resized)

@@ -2,6 +2,7 @@ package sim
 
 import (
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/vmware/govmomi/simulator"
@@ -386,6 +387,10 @@ func shapeVMFSDatastoreSummary(ds *simulator.Datastore, d *topology.Device) {
 	shapeDatastoreUsage(ds, vol.Capacity, vol.Capacity/10, nil)
 }
 
+// toolsVersion is VMware Tools 12.4.0 as vSphere numbers versions
+// (major<<10 | minor<<5 | patch).
+const toolsVersion = 12<<10 | 4<<5
+
 // shapeVM gives a created VM the guest, runtime and summary a powered-on
 // VM with tools reports.
 func shapeVM(obj *simulator.VirtualMachine, cl *topology.Cluster, vm *topology.VM, now func() time.Time) {
@@ -405,6 +410,15 @@ func shapeVM(obj *simulator.VirtualMachine, cl *topology.Cluster, vm *topology.V
 	obj.Guest.ToolsStatus = types.VirtualMachineToolsStatusToolsOk
 	obj.Guest.ToolsRunningStatus = string(types.VirtualMachineToolsRunningStatusGuestToolsRunning)
 	obj.Guest.ToolsVersionStatus2 = string(types.VirtualMachineToolsVersionStatusGuestToolsCurrent)
+	obj.Guest.ToolsVersionStatus = obj.Guest.ToolsVersionStatus2
+	obj.Guest.ToolsVersion = strconv.Itoa(toolsVersion)
+	// VCF Operations reads the installed version before it shuts a guest
+	// down for an action, and fails on a VM that has none
+	if obj.Config.Tools == nil {
+		obj.Config.Tools = new(types.ToolsConfigInfo)
+	}
+	obj.Config.Tools.ToolsVersion = toolsVersion
+	obj.Config.Tools.ToolsInstallType = string(types.VirtualMachineToolsInstallTypeGuestToolsTypeOpenVMTools)
 	obj.Guest.HostName = vm.Name + "." + cl.Domain()
 	obj.Guest.IpAddress = fmt.Sprintf("10.20.%d.%d", (vm.Serial/254)%256, vm.Serial%254+1)
 	obj.Guest.GuestOperationsReady = types.NewBool(true)
