@@ -356,9 +356,26 @@ type ClusterOverride struct {
 	VMHigh int `yaml:"vmHigh,omitempty" json:"vmHigh,omitempty"`
 	// VMRoles pins the role of single VMs by number (1 is <cluster>-vm-001),
 	// over what vms.rightsizing deals them; "normal" pins a VM to no role.
-	VMRoles     map[int]string `yaml:"vmRoles,omitempty" json:"vmRoles,omitempty"`
+	VMRoles map[int]string `yaml:"vmRoles,omitempty" json:"vmRoles,omitempty"`
+	// VMSizes is the size of single VMs by number, over the size their role
+	// builds them with: what a tool such as VCF Operations resized them to
+	// while the simulator ran (a rightsizing action), kept so that a resized
+	// VM stays resized across restarts and rebuilds.
+	VMSizes     map[int]VMSize `yaml:"vmSizes,omitempty" json:"vmSizes,omitempty"`
 	ClusterSpec `yaml:",inline" json:",omitempty"`
 }
+
+// VMSize is a VM's configured vCPUs and memory.
+type VMSize struct {
+	CPUs     int `yaml:"cpus" json:"cpus"`
+	MemoryMB int `yaml:"memoryMB" json:"memoryMB"`
+}
+
+// MaxVMCPUs and MaxVMMemoryMB are the largest VM vSphere 8 configures.
+const (
+	MaxVMCPUs     = 768
+	MaxVMMemoryMB = 24 << 20
+)
 
 // Auth lists accepted users. AnyLogin explicitly permits arbitrary credentials.
 type Auth struct {
@@ -691,6 +708,11 @@ func (s *Scenario) Validate() error {
 				return fmt.Errorf("scenario: clusters[%s]: vmRoles: %d: %q is not a VM number and role (roles: normal, idle, poweredOff, oversized, undersized, oldSnapshot)", c.Key, n, role)
 			}
 		}
+		for n, size := range c.VMSizes {
+			if n < 1 || size.CPUs < 1 || size.CPUs > MaxVMCPUs || size.MemoryMB < 4 || size.MemoryMB > MaxVMMemoryMB {
+				return fmt.Errorf("scenario: clusters[%s]: vmSizes: %d: %d vCPUs and %d MB is not a VM number and size (1 to %d vCPUs, 4 MB to %d MB)", c.Key, n, size.CPUs, size.MemoryMB, MaxVMCPUs, MaxVMMemoryMB)
+			}
+		}
 		for name, list := range map[string][]int{"removedVMs": c.RemovedVMs, "addedVMs": c.AddedVMs} {
 			seen := map[int]bool{}
 			for _, n := range list {
@@ -916,6 +938,16 @@ func (s *Scenario) VMRoles(key string) map[int]string {
 	for _, c := range s.Clusters {
 		if c.Key == key {
 			return c.VMRoles
+		}
+	}
+	return nil
+}
+
+// VMSizes is the per-VM sizes a cluster keeps, by VM number.
+func (s *Scenario) VMSizes(key string) map[int]VMSize {
+	for _, c := range s.Clusters {
+		if c.Key == key {
+			return c.VMSizes
 		}
 	}
 	return nil

@@ -39,6 +39,11 @@ type workloadNode struct {
 	loadCPU, loadMem float64
 	boot             time.Time
 	role             string // a VM's rightsizing role, "" as built
+	// builtCPU (MHz), builtCPUs and builtMemory (MiB) are the size a VM's
+	// workload is made for: the size its role built it with, which is its
+	// size unless a tool resized it.
+	builtCPU, builtMemory int64
+	builtCPUs             int
 }
 
 func readPerformanceState(ctx *simulator.Context) *performanceState {
@@ -100,7 +105,10 @@ func readPerformanceSubset(ctx *simulator.Context, selected *perfRef) *performan
 					}
 					n.cpus = int(o.Summary.Config.NumCpu)
 					n.cpuInstances = n.cpus
-					n.role = roleOf(ctx, o.Self)
+					if rec, ok := recordOf(ctx, o.Self); ok {
+						n.role = rec.role
+						n.builtCPUs, n.builtMemory = rec.builtCPUs, int64(rec.builtMemoryMB)
+					}
 					n.memory = int64(o.Summary.Config.MemorySizeMB)
 					n.datastores = append([]perfRef(nil), o.Datastore...)
 					if o.Runtime.BootTime != nil {
@@ -159,8 +167,12 @@ func readPerformanceSubset(ctx *simulator.Context, selected *perfRef) *performan
 			}
 		}
 		if n.ref.Type == "VirtualMachine" {
+			if n.builtCPUs == 0 {
+				n.builtCPUs, n.builtMemory = n.cpus, n.memory
+			}
 			if h := s.nodes[n.host]; h != nil {
 				n.cpu = int64(n.cpus) * h.cpu / int64(max(h.cpus, 1))
+				n.builtCPU = int64(n.builtCPUs) * h.cpu / int64(max(h.cpus, 1))
 				n.active = n.active && h.active
 				n.loadCPU, n.loadMem = loadOf(ctx, h.parent)
 			} else {
@@ -246,24 +258,37 @@ func vmWorkload(seed string, n *workloadNode, t time.Time, cpuScale, memScale fl
 	}
 	// Activity's CPU dial scales what the VM uses; a busier place also
 	// contends more, so ready time rises faster than usage does
+	// The load is made for the size the VM was built with (n.built*): a
+	// VM a tool resized carries the same work, a larger or smaller share
+	// of what it now has.
+	builtCPU, builtMem, builtCPUs := n.built()
 	usage := math.Min(.95, base*n.loadCPU)
 	readyPct := .002 + .008*usage + .09*pulse + .06*math.Max(0, n.loadCPU-1)*usage
-	w.cpu = int64(float64(n.cpu) * usage * cpuScale)
+	w.cpu = min(n.cpu*95/100, int64(float64(builtCPU)*usage*cpuScale))
 	w.demand = min(n.cpu, int64(float64(w.cpu)*(1+readyPct)))
-	w.memory = min(n.memory, int64(float64(n.memory)*(.23+.55*base)*memScale*n.loadMem))
+	w.memory = min(n.memory, int64(float64(builtMem)*(.23+.55*base)*memScale*n.loadMem))
 	w.activeMemory = int64(float64(w.memory) * (.45 + .4*usage))
 	w.read = int64((16 + float64(h%400) + usage*10000) * (1 + pulse))
 	w.write = int64(float64(w.read) * (.3 + float64(h%70)/100))
 	w.rx = int64(32 + usage*3000 + float64(h%300))
 	w.tx = int64(float64(w.rx) * .6)
 	w.vcpus = int64(n.cpus)
-	w.usedCPU = int64(usage * cpuScale * 20000 * float64(n.cpus))
+	w.usedCPU = min(19000*int64(n.cpus), int64(usage*cpuScale*20000*float64(builtCPUs)))
 	w.ready = int64(readyPct * 20000 * float64(n.cpus))
 	w.wait = max(0, 20000*int64(n.cpus)-w.usedCPU-w.ready)
 	w.ios = max(1, (w.read+w.write)/32)
 	w.latency = int64(900+4000*usage+35000*pulse) * w.ios
 	roleWorkload(n.role, n, &w, day, drift, cpuScale, memScale)
 	return w
+}
+
+// built is the size a VM's workload is made for: CPU (MHz), memory (MiB)
+// and vCPUs.
+func (n *workloadNode) built() (cpu, memory int64, cpus int) {
+	if n.builtCPUs == 0 || n.builtCPU == 0 {
+		return n.cpu, n.memory, n.cpus
+	}
+	return n.builtCPU, n.builtMemory, n.builtCPUs
 }
 
 // sample computes each VM once and sums the same integer values into its host,

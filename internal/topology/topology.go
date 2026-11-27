@@ -108,6 +108,9 @@ type Cluster struct {
 	VMHigh int
 	// VMRoles is the per-VM roles the scenario pins, by VM number.
 	VMRoles map[int]string
+	// VMSizes is the per-VM sizes the scenario keeps (what a tool resized
+	// VMs to), by VM number.
+	VMSizes map[int]scenario.VMSize
 
 	// live, when set, is the VM list as Activity has changed it since the
 	// inventory was built. VMs stays as built; everything that answers a
@@ -326,10 +329,16 @@ type VM struct {
 	Disks         []*VDisk
 	snapshot      *atomic.Int64
 	// Role is what the VM shows capacity tools: "" (as built) or one of
-	// scenario.Roles. CPUs and MemoryMB are its configured size.
-	Role     string
-	CPUs     int
-	MemoryMB int
+	// scenario.Roles. CPUs and MemoryMB are its configured size; BuiltCPUs
+	// and BuiltMemoryMB the size its role builds it with, which its workload
+	// is made for. The two differ once a tool has resized the VM
+	// (scenario vmSizes): the workload stays what it was, so a resize that
+	// fits it puts an end to what the role showed.
+	Role          string
+	CPUs          int
+	MemoryMB      int
+	BuiltCPUs     int
+	BuiltMemoryMB int
 	// SnapshotAge, OldSnapshotBytes and SnapshotName describe the old
 	// snapshot of a VM with the oldSnapshot role: how long before the
 	// simulator started it was taken, how much space it takes (also recorded
@@ -407,6 +416,10 @@ func assignRole(cl *Cluster, vm *VM, n int) {
 		vm.OldSnapshotBytes = gb << 30
 		vm.SetSnapshotBytes(vm.OldSnapshotBytes)
 		vm.SnapshotName = snapshotNames[hashNumber(vm.Key, snapshotHashKind+"-name")%uint64(len(snapshotNames))]
+	}
+	vm.BuiltCPUs, vm.BuiltMemoryMB = vm.CPUs, vm.MemoryMB
+	if size, ok := cl.VMSizes[n]; ok {
+		vm.CPUs, vm.MemoryMB = size.CPUs, size.MemoryMB
 	}
 }
 
@@ -575,6 +588,7 @@ func generateCluster(s *scenario.Scenario, r *registry.Registry, dc *Datacenter,
 	}
 	cl.Datastore = cl.StoreName + "-vsanDatastore"
 	cl.VMRoles = s.VMRoles(key)
+	cl.VMSizes = s.VMSizes(key)
 	removed := s.RemovedHosts(key)
 	for hi := 1; hi <= spec.Hosts; hi++ {
 		if removed[hi] {

@@ -56,3 +56,29 @@ clusters:
 		t.Errorf("unknown role: %v", err)
 	}
 }
+
+// vmSizes keeps sizes a tool gave VMs; a size no vSphere VM can have is
+// an error.
+func TestVMSizesAreChecked(t *testing.T) {
+	for _, tc := range []struct {
+		size VMSize
+		n    int
+		ok   bool
+	}{
+		{VMSize{CPUs: 4, MemoryMB: 8192}, 3, true},
+		{VMSize{CPUs: 0, MemoryMB: 8192}, 3, false},
+		{VMSize{CPUs: 4, MemoryMB: 2}, 3, false},
+		{VMSize{CPUs: MaxVMCPUs + 1, MemoryMB: 8192}, 3, false},
+		{VMSize{CPUs: 4, MemoryMB: 8192}, 0, false},
+	} {
+		s := Phase1("sizes")
+		s.Clusters = []ClusterOverride{{Key: "dc-01/cluster-01", VMSizes: map[int]VMSize{tc.n: tc.size}}}
+		err := s.Validate()
+		if (err == nil) != tc.ok {
+			t.Errorf("VM %d at %+v: %v", tc.n, tc.size, err)
+		}
+		if tc.ok && s.VMSizes("dc-01/cluster-01")[tc.n] != tc.size {
+			t.Errorf("VMSizes: %v", s.VMSizes("dc-01/cluster-01"))
+		}
+	}
+}

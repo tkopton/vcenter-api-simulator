@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"maps"
 	"math"
 	"os"
 	"path/filepath"
@@ -181,6 +182,13 @@ func keepActivityVMs(sc, saved *scenario.Scenario) {
 		has[k] = true
 	}
 	for _, was := range saved.Clusters {
+		// the sizes tools resized VMs to, as Activity's VMs: the file's own
+		// say wins
+		if has[was.Key] && len(was.VMSizes) > 0 {
+			if o := override(sc, was.Key); len(o.VMSizes) == 0 {
+				o.VMSizes = maps.Clone(was.VMSizes)
+			}
+		}
 		if !has[was.Key] || (len(was.AddedVMs) == 0 && len(was.RemovedVMs) == 0 && was.VMHigh == 0) {
 			continue
 		}
@@ -205,6 +213,14 @@ func (c *Controller) recordVM(cluster string, number int, added bool) {
 	} else {
 		o.RemovedVMs = append(o.RemovedVMs, number)
 		sort.Ints(o.RemovedVMs)
+		// a removed VM's number is never used again: its size goes with it
+		if _, ok := o.VMSizes[number]; ok {
+			o.VMSizes = maps.Clone(o.VMSizes)
+			delete(o.VMSizes, number)
+			if len(o.VMSizes) == 0 {
+				o.VMSizes = nil
+			}
+		}
 	}
 	c.cur.Store(&running{version: r.version, at: r.at, sc: sc, topo: r.topo, sim: r.sim})
 	c.save()

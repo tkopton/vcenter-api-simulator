@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/sentania/vcenter-api-simulator/internal/topology"
 	"github.com/vmware/govmomi/object"
 	"github.com/vmware/govmomi/property"
 	"github.com/vmware/govmomi/vim25/methods"
@@ -15,7 +16,16 @@ import (
 // must count running VMs in every descendant pool, and usage must agree with
 // its MHz utilization. Exercise both through SOAP, including power changes.
 func TestResourcePoolCoreCountersIncludeNestedRunningVMs(t *testing.T) {
-	e := start(t, "pool-core-counters")
+	// Enough processors to exercise nonzero integer core usage as well as
+	// MHz. The VMs are built that size: a VM a tool resizes keeps the load
+	// it was built for, which would leave 16 vCPUs nearly idle.
+	topo := topology.Phase1("pool-core-counters")
+	for _, cl := range topo.Clusters() {
+		for _, vm := range cl.VMs {
+			vm.CPUs, vm.BuiltCPUs = 16, 16
+		}
+	}
+	e := startTopology(t, topo)
 	ctx := context.Background()
 	root := object.NewResourcePool(e.client, firstOf(t, e, "ResourcePool"))
 	var props mo.ResourcePool
@@ -42,8 +52,6 @@ func TestResourcePoolCoreCountersIncludeNestedRunningVMs(t *testing.T) {
 	var parentCPUs, childCPUs int64
 	for i, ref := range e.cl().VMs {
 		vm := object.NewVirtualMachine(e.client, ref)
-		// Enough processors to exercise nonzero integer core usage as well as MHz.
-		wait(vm.Reconfigure(ctx, types.VirtualMachineConfigSpec{NumCPUs: 16}))
 		pool := child.Reference()
 		if i == 0 {
 			pool = parent.Reference()

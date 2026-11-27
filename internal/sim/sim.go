@@ -94,6 +94,10 @@ type Options struct {
 	// goroutine, and reads the marker as it then stands with
 	// Simulator.LicenseManager.
 	LicenseManagerChanged func()
+	// VMResized is told when a tool changed the vCPUs or memory of a VM
+	// the simulator made, and reads the sizes as they then stand with
+	// Simulator.VMSizes. It is called from its own goroutine.
+	VMResized func()
 }
 
 // ClusterRefs are the MoRefs vcsim assigned to one cluster's objects.
@@ -210,6 +214,10 @@ func New(opts Options) (*Simulator, error) {
 		s.Close()
 		return nil, err
 	}
+	// only now: building the inventory reconfigures nothing a tool did
+	records := vmRecords(m.Service.Context)
+	records.resized, records.now = opts.VMResized, s.Env.Now
+	m.Service.Context.Map.AddHandler(records)
 	installLegacyImageManager(m.Service.Context)
 	m.Service.Context.Map.Put(&resourceModel{ManagedObjectReference: types.ManagedObjectReference{Type: "DataProviderResourceModel", Value: "ResourceModel"}})
 	s.server = m.Service.NewServer()
@@ -834,7 +842,7 @@ func (s *Simulator) createVM(ctx *simulator.Context, refs *ClusterRefs, vm *topo
 	if role == "" && vm.RightSized {
 		role = roleRightSized
 	}
-	setRole(ctx, ref, role)
+	recordVM(ctx, ref, vm, role)
 	if err := s.takeOldSnapshot(ctx, obj, vm); err != nil {
 		return err
 	}

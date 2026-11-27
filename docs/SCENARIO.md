@@ -158,6 +158,7 @@ clusters:                   # explicit overrides win over draws and defaults;
     seedEpoch: 0            # above 0: this cluster gets its own telemetry seed
                             #   (every sample changes, no identity does)
     vmRoles: {7: undersized, 12: normal}   # pin single VMs by number; normal pins no role
+    vmSizes: {7: {cpus: 4, memoryMB: 8192}}   # a VM's size over its role's; written when a tool resizes a VM
 
 removed:                    # generated clusters left out (the console's Delete);
   - dc-01/cluster-07        #   the others keep their numbers and the removed
@@ -267,6 +268,31 @@ Global Settings, Reclamation, and the policy's rightsizing settings): lower thos
 periods for a lab. It ranks a powered-off or idle VM above its snapshots, which
 is why an old snapshot is a role of its own.
 
+### Rightsizing actions
+
+A tool can resize a VM the way VCF Operations' "Set CPU Count and Memory for VM"
+action does: an optional snapshot, a power off or guest shutdown,
+`ReconfigVM_Task` with the new vCPUs and memory, and a power on. The VM then has
+the new size everywhere a tool reads it (`config.hardware`, `summary.config`,
+`runtime.maxCpuUsage` and `runtime.maxMemoryUsage`, sent to property collector
+subscriptions too), and its performance follows it.
+
+The workload stays what it was: it is made for the size the VM's role builds it
+with, not for the size it has. An undersized VM given what it asks for has room
+for its demand, stops ballooning and swapping, and ready time drops back. An
+oversized VM made smaller uses the same MHz and memory, a larger share of what is
+left, so a capacity tool's next recommendation comes closer to what it needs. A VM
+without a role works the same way: resizing it does not make its guest busier or
+quieter.
+
+The simulator keeps the size: `vmSizes` on the cluster's entry, by VM number, the
+size a tool gave the VM when it differs from the size its role builds it with. A
+restart or a rebuild makes the VM that size again, and the history says what the
+tool did. Resizing a VM back to its role's size removes its entry. In VCF
+Operations, actions run only when the vCenter's account allows them (the cloud
+account's "Enable Actions"), and the VM must be one the simulator built: a VM a
+tool created is not tracked.
+
 ## Sizing a scenario
 
 Entities per cluster, by family (the fan-out the live capture showed):
@@ -352,6 +378,7 @@ resumes unless the scenario file changed since, in which case the file wins.
 | Remove hosts | `removedHosts` on the cluster's entry: the host numbers left out | the other hosts keep their names and serials; a removed number is not reused |
 | Remove a cluster | the key under `removed:` | the cluster's serials remain reserved |
 | Activity adds a VM, or removes one | `addedVMs` and `removedVMs` on the cluster's entry: the VM numbers added beyond the ones its hosts generate, and the numbers left out. `vmHigh` is the highest VM number the cluster has used, written when hosts are removed after Activity was started so that those hosts' VM numbers are not given to new VMs. The lists only grow: a number stays reserved. | every other VM keeps its name and serials; a number is never used twice, and a rebuild makes an added VM again with the same identities. The vCenter is not rebuilt. |
+| A tool resizes a VM (a rightsizing action) | `vmSizes` on the cluster's entry: the VM's vCPUs and memory, by VM number, while they differ from what its role builds it with | none; the vCenter is not rebuilt |
 | Replace everything with a new environment | replaces `datacenters`, `defaults`, `vary`, `clusters`, `removed` and `seed` | a new registry: every identity is replaced (the same layout name and sizes build the same identities again) |
 | Storage | `nfs:` and `iscsi:` under the datacenter | unchanged datastores keep theirs |
 | DNS domain (Clusters) | `domain` | none; hosts and VMs are renamed, not replaced. The simulator is rebuilt, so tools sign in again |

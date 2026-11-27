@@ -395,8 +395,9 @@ func shapeVM(obj *simulator.VirtualMachine, cl *topology.Cluster, vm *topology.V
 	obj.Runtime.FaultToleranceState = types.VirtualMachineFaultToleranceStateNotConfigured
 	obj.Runtime.RecordReplayState = types.VirtualMachineRecordReplayStateInactive
 	obj.Runtime.BootTime = &boot
-	obj.Runtime.MaxCpuUsage = int32(vm.CPUs) * cpuMhz
-	obj.Runtime.MaxMemoryUsage = int32(vm.MemoryMB)
+	// the size the VM has, which a tool may have changed since it was built
+	obj.Runtime.MaxCpuUsage = obj.Config.Hardware.NumCPU * cpuMhz
+	obj.Runtime.MaxMemoryUsage = obj.Config.Hardware.MemoryMB
 	obj.Summary.Runtime = obj.Runtime
 	obj.Guest.GuestState = "running"
 	obj.Guest.GuestId = obj.Config.GuestId

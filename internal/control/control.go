@@ -307,6 +307,7 @@ func (c *Controller) build(sc *scenario.Scenario, reg *registry.Registry, versio
 		Faults: sc.Faults, Latency: sc.Latency, Conditions: sc.Conditions, Now: c.now, Certificate: c.opts.Certificate,
 		Licensing: sc.Licensing, Issuer: signon.Open(c.opts.DataDir, sc.Seed), Trust: c.trust, PublicAddress: c.Address(), ApplianceNetwork: c.opts.ApplianceNetwork,
 		LicenseManagerChanged: func() { c.licenseManagerChanged(built.Load()) },
+		VMResized:             func() { c.vmResized(built.Load()) },
 	})
 	if err != nil {
 		return nil, err
