@@ -15,6 +15,9 @@ func counterName(c types.PerfCounterInfo) string {
 // Unsupported counters are omitted, never manufactured as zero samples.
 func valueAt(c types.PerfCounterInfo, n *workloadNode, w workload) (int64, bool) {
 	name := counterName(c)
+	if strings.HasPrefix(name, "power.") {
+		return powerValue(name, n, w)
+	}
 	if v, ok, handled := memoryValue(name, n, w); handled {
 		return v, ok
 	}
@@ -85,8 +88,10 @@ func valueAt(c types.PerfCounterInfo, n *workloadNode, w workload) (int64, bool)
 		return w.swapped / 64, true // KBps: a VM short of memory keeps paging
 	case "mem.swapoutRate", "mem.compressed", "mem.compressionRate", "mem.decompressionRate", "mem.capacity.contention", "mem.state":
 		return 0, true
-	case "disk.used", "disk.provisioned", "disk.unshared", "disk.capacity.provisioned", "disk.capacity.usage":
+	case "disk.used", "disk.unshared", "disk.capacity.usage":
 		return n.used, true
+	case "disk.provisioned", "disk.capacity.provisioned":
+		return n.provisioned, true
 	case "disk.capacity":
 		return n.capacity, true
 	case "disk.capacity.contention":

@@ -75,7 +75,8 @@ func shapeOff(obj *simulator.VirtualMachine) {
 // takeOldSnapshot gives a VM with the oldSnapshot role its snapshot: a real
 // one, made by vcsim's snapshot implementation so that the snapshot object,
 // tree and file layout are all there, then dated back by the VM's snapshot
-// age and given the size of a snapshot that has grown for that long.
+// age. Its size is in the storage model (topology.VMStorage), so the VM's
+// storage, its snapshot file and the datastore's used space all count it.
 func (s *Simulator) takeOldSnapshot(ctx *simulator.Context, obj *simulator.VirtualMachine, vm *topology.VM) error {
 	if vm.Role != scenario.RoleOldSnapshot {
 		return nil
@@ -105,24 +106,12 @@ func (s *Simulator) takeOldSnapshot(ctx *simulator.Context, obj *simulator.Virtu
 			}
 		}
 		date(obj.Snapshot.RootSnapshotList)
-		changes := []types.PropertyChange{{Name: "snapshot", Val: obj.Snapshot}, {Name: "rootSnapshot", Val: obj.RootSnapshot}}
-		if obj.LayoutEx != nil && obj.Snapshot.CurrentSnapshot != nil {
-			keys := map[int32]bool{}
-			for _, l := range obj.LayoutEx.Snapshot {
-				if l.Key == *obj.Snapshot.CurrentSnapshot {
-					keys[l.DataKey] = true
-				}
-			}
-			for i := range obj.LayoutEx.File {
-				if keys[obj.LayoutEx.File[i].Key] {
-					obj.LayoutEx.File[i].Size = vm.SnapshotBytes
-					obj.LayoutEx.File[i].UniqueSize = vm.SnapshotBytes
-				}
-			}
-			obj.Summary.Storage.Committed += vm.SnapshotBytes
-			obj.Summary.Storage.Unshared += vm.SnapshotBytes
-			changes = append(changes, types.PropertyChange{Name: "layoutEx", Val: obj.LayoutEx}, types.PropertyChange{Name: "summary.storage", Val: obj.Summary.Storage})
-		}
+		// vcsim recalculated storage from the snapshot's dummy file; put the
+		// modelled figures back, the snapshot's size (recorded at build) on
+		// its snapshot file, as Activity's backups do
+		shapeVMStorage(obj, vm.Cluster, vm, s.Env.Now())
+		changes := []types.PropertyChange{{Name: "snapshot", Val: obj.Snapshot}, {Name: "rootSnapshot", Val: obj.RootSnapshot}, {Name: "summary", Val: obj.Summary}}
+		changes = append(changes, storageChanges(obj)...)
 		ctx.Update(obj, changes)
 	})
 	return nil

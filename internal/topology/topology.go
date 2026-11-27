@@ -53,6 +53,7 @@ type Datacenter struct {
 	Name     string
 	Key      string // registry key tail: the name
 	Serial   int
+	Domain   string // DNS domain of generated host and guest names
 	VDS      string
 	VDSUUID  string // the vDS uuid on /sdk (summary.uuid, proxy switch dvsUuid, vmkernel NIC switchUuid)
 	Clusters []*Cluster
@@ -97,6 +98,8 @@ type Cluster struct {
 	Dedup         bool // ESA dedup/compression: switches the *-esa-dedup-* families on
 	Compression   bool
 	Datastore     string // the cluster's vSAN datastore name
+	StoreName     string // the cluster's name as datastore names carry it: unique across datacenters
+	DiskKB        int64  // capacity of each virtual disk of the cluster's VMs
 	ContainerID   string // the vSAN datastore container id (url ds:///vmfs/volumes/vsan:<id>/)
 	Hosts         []*Host
 	VMs           []*VM
@@ -173,7 +176,7 @@ func (c *Cluster) UsedDelta() int64 {
 	return c.usedDelta.Load()
 }
 
-// VsanCapacity and VsanUsed are shared by datastore and vSAN capacity reads.
+// VsanCapacity is shared by datastore and vSAN capacity reads.
 func VsanCapacity(cl *Cluster) int64 {
 	var total int64
 	for _, h := range cl.Hosts {
@@ -186,14 +189,71 @@ func VsanCapacity(cl *Cluster) int64 {
 	return total
 }
 
-func VsanUsed(cl *Cluster) int64 {
-	used := cl.UsedDelta()
-	for _, vm := range cl.LiveVMs() {
-		for _, d := range vm.Disks {
-			used += d.CapacityKB << 10 / 2
-		}
+// VMStorage is the one model of what a VM occupies on its datastore: disks are
+// thin, so half their capacity is committed and the rest is space the VM could
+// grow into. Nothing the simulator makes is shared between VMs. A VM's backup
+// snapshot adds a committed, unshared snapshot file. Datastore and VM storage
+// properties, capacity counters and vSAN space reads all use it.
+func VMStorage(vm *VM) (committed, uncommitted, unshared int64) {
+	for _, d := range vm.Disks {
+		half := (d.CapacityKB << 10) / 2
+		committed += half
+		uncommitted += (d.CapacityKB << 10) - half
+		unshared += half
 	}
+	snap := vm.SnapshotBytes()
+	return committed + snap, uncommitted, unshared + snap
+}
+
+// SnapshotSize is the space a snapshot of the VM takes while it exists: what
+// the VM changed since it was taken, a twentieth of what its disks commit.
+func SnapshotSize(vm *VM) int64 {
+	var committed int64
+	for _, d := range vm.Disks {
+		committed += (d.CapacityKB << 10) / 2
+	}
+	return committed / 20
+}
+
+// SnapshotBytes is the space the VM's snapshot takes, 0 without one.
+func (vm *VM) SnapshotBytes() int64 {
+	if vm.snapshot == nil {
+		return 0
+	}
+	return vm.snapshot.Load()
+}
+
+// SetSnapshotBytes records the space the VM's snapshot takes.
+func (vm *VM) SetSnapshotBytes(n int64) {
+	if vm.snapshot != nil {
+		vm.snapshot.Store(n)
+	}
+}
+
+// DatastoreUsage is how much of a datastore is used and how much the VMs on it
+// may still grow into: what is stored there besides the VMs, plus what the VMs
+// commit, never more than the capacity.
+func DatastoreUsage(capacity, baseline int64, vms []*VM) (used, uncommitted int64) {
+	used = baseline
+	for _, vm := range vms {
+		c, u, _ := VMStorage(vm)
+		used += c
+		uncommitted += u
+	}
+	return min(max(0, used), capacity), uncommitted
+}
+
+// VsanUsed is the committed space of the cluster's VMs plus what Activity has
+// filled, never more than the cluster's capacity. VsanUncommitted is the space
+// those VMs may still grow into.
+func VsanUsed(cl *Cluster) int64 {
+	used, _ := DatastoreUsage(VsanCapacity(cl), cl.UsedDelta(), cl.LiveVMs())
 	return used
+}
+
+func VsanUncommitted(cl *Cluster) int64 {
+	_, uncommitted := DatastoreUsage(VsanCapacity(cl), cl.UsedDelta(), cl.LiveVMs())
+	return uncommitted
 }
 
 // VDS is the datacenter's vDS name; VDSUUID its uuid; Portgroup the VM
@@ -264,17 +324,19 @@ type VM struct {
 	NamespaceUUID string // the VM home namespace directory on the vSAN datastore
 	Host          int    // index into Cluster.Hosts
 	Disks         []*VDisk
+	snapshot      *atomic.Int64
 	// Role is what the VM shows capacity tools: "" (as built) or one of
 	// scenario.Roles. CPUs and MemoryMB are its configured size.
 	Role     string
 	CPUs     int
 	MemoryMB int
-	// SnapshotAge and SnapshotBytes describe the old snapshot of a VM with
-	// the oldSnapshot role: how long before the simulator started it was
-	// taken, and how much space its files take.
-	SnapshotAge   time.Duration
-	SnapshotBytes int64
-	SnapshotName  string
+	// SnapshotAge, OldSnapshotBytes and SnapshotName describe the old
+	// snapshot of a VM with the oldSnapshot role: how long before the
+	// simulator started it was taken, how much space it takes (also recorded
+	// with SetSnapshotBytes, so the storage model counts it) and its name.
+	SnapshotAge      time.Duration
+	OldSnapshotBytes int64
+	SnapshotName     string
 }
 
 // VM sizes: every VM is built with 2 vCPUs and 4 GiB, except oversized VMs,
@@ -325,7 +387,8 @@ func assignRole(cl *Cluster, vm *VM, n int) {
 		days := age.Min + int(hashNumber(vm.Key, snapshotHashKind)%uint64(age.Max-age.Min+1))
 		vm.SnapshotAge = time.Duration(days) * 24 * time.Hour
 		gb := snapshotMinGB + int64(hashNumber(vm.Key, snapshotSizeHashKey)%(snapshotMaxGB-snapshotMinGB+1))
-		vm.SnapshotBytes = gb << 30
+		vm.OldSnapshotBytes = gb << 30
+		vm.SetSnapshotBytes(vm.OldSnapshotBytes)
 		vm.SnapshotName = snapshotNames[hashNumber(vm.Key, snapshotHashKind+"-name")%uint64(len(snapshotNames))]
 	}
 }
@@ -342,9 +405,8 @@ type VDisk struct {
 	CapacityKB int64
 }
 
-// Domain is the DNS domain simulated host names live in (an IANA-reserved
-// name that cannot resolve).
-const Domain = "sim.invalid"
+// Domain is the DNS domain the datacenter's generated names live in.
+func (c *Cluster) Domain() string { return c.Datacenter.Domain }
 
 // Clusters lists every cluster in datacenter order.
 func (t *Topology) Clusters() []*Cluster {
@@ -428,7 +490,7 @@ func Generate(s *scenario.Scenario, r *registry.Registry) *Topology {
 		t.TelemetrySeed = s.Seed
 	}
 	for _, d := range s.Datacenters {
-		dc := &Datacenter{Name: d.Name, Key: d.Name, Serial: r.Serial("datacenter/" + d.Name), VDS: "vds-01"}
+		dc := &Datacenter{Name: d.Name, Key: d.Name, Serial: r.Serial("datacenter/" + d.Name), VDS: "vds-01", Domain: s.DNSDomain()}
 		dc.VDSUUID = vdsUUID(r.Hex("vds", r.Serial("vds/"+d.Name), 32))
 		for n := 1; n <= d.Clusters; n++ {
 			if s.IsRemoved(scenario.ClusterKey(d.Name, n)) {
@@ -487,13 +549,14 @@ func generateCluster(s *scenario.Scenario, r *registry.Registry, dc *Datacenter,
 	cl.StatsUUID = r.UUID("vsan-stats-object", cl.Serial)
 	cl.PolicyUUID = r.UUID("vsan-default-policy", cl.Serial)
 	cl.ContainerID = r.Hex("vsan-container", cl.Serial, 16) + "-" + r.Hex("vsan-container-tail", cl.Serial, 16)
-	// vCenter names the first vSAN datastore in a datacenter "vsanDatastore"
-	// and the next ones "vsanDatastore (1)", "vsanDatastore (2)", ...
-	if n == 1 {
-		cl.Datastore = "vsanDatastore"
-	} else {
-		cl.Datastore = fmt.Sprintf("vsanDatastore (%d)", n-1)
+	// Name each cluster's vSAN datastore for its cluster. The old
+	// "vsanDatastore (n)" scheme made Operations show indistinguishable
+	// datastores. The name is derived, so it never minted a new identity.
+	cl.StoreName = name
+	if len(s.Datacenters) > 1 {
+		cl.StoreName = dc.Name + "-" + name
 	}
+	cl.Datastore = cl.StoreName + "-vsanDatastore"
 	cl.VMRoles = s.VMRoles(key)
 	removed := s.RemovedHosts(key)
 	for hi := 1; hi <= spec.Hosts; hi++ {
@@ -507,11 +570,27 @@ func generateCluster(s *scenario.Scenario, r *registry.Registry, dc *Datacenter,
 		cl.Hosts = append(cl.Hosts, host)
 	}
 	numbers, high := s.VMNumbers(key, len(cl.Hosts)*scenario.Int(spec.VMs.PerHost))
+	// Size disks from the scenario's own population, not the current one, so
+	// VMs Activity or the console added or removed never resize the survivors
+	// when the inventory is rebuilt.
+	cl.DiskKB = diskKB(VsanCapacity(cl), spec.Hosts*scenario.Int(spec.VMs.PerHost)*spec.VMs.DisksPerVM)
 	for _, vi := range numbers {
 		cl.VMs = append(cl.VMs, generateVM(r, cl, vi))
 	}
 	cl.VMHigh = high
 	return cl
+}
+
+// diskKB sizes the virtual disks of a cluster's VMs so that its VMs provision
+// four fifths of the vSAN capacity and, as disks are thin, commit two fifths of
+// it: an environment that looks used whatever its size. A vmdk is at least
+// 40 GiB and at most 62 TiB.
+func diskKB(capacity int64, disks int) int64 {
+	gib := int64(40)
+	if disks > 0 {
+		gib = min(max(gib, capacity/10*8/int64(disks)>>30), 62<<10)
+	}
+	return gib << 20
 }
 
 // NewVM makes the VM with number n of a cluster that is already built, for
@@ -555,7 +634,7 @@ func generateHost(r *registry.Registry, cl *Cluster, n int) *Host {
 	key := cl.Key + "/" + short
 	h := &Host{
 		Index:      n - 1,
-		Name:       fmt.Sprintf("%s.%s.%s.%s", short, cl.Name, cl.Datacenter.Name, Domain),
+		Name:       fmt.Sprintf("%s.%s.%s.%s", short, cl.Name, cl.Datacenter.Name, cl.Datacenter.Domain),
 		Key:        key,
 		Serial:     r.Serial("host/" + key),
 		Cluster:    cl,
@@ -638,12 +717,13 @@ func generateVM(r *registry.Registry, cl *Cluster, n int) *VM {
 	name := fmt.Sprintf("%s-vm-%03d", cl.Name, n)
 	key := cl.Key + "/" + name
 	vm := &VM{
-		Index:   n - 1, // the VM's number less one; with VMs removed it is not its place in Cluster.VMs
-		Name:    name,
-		Key:     key,
-		Serial:  r.Serial("vm/" + key),
-		Cluster: cl,
-		Host:    (n - 1) % len(cl.Hosts), // placement follows the current host count, as DRS would rebalance
+		Index:    n - 1, // the VM's number less one; with VMs removed it is not its place in Cluster.VMs
+		Name:     name,
+		Key:      key,
+		Serial:   r.Serial("vm/" + key),
+		Cluster:  cl,
+		Host:     (n - 1) % len(cl.Hosts), // placement follows the current host count, as DRS would rebalance
+		snapshot: new(atomic.Int64),
 	}
 	vm.UUID = r.UUID("vm-smbios", vm.Serial)
 	vm.InstanceUUID = r.UUID("vm-instance", vm.Serial)
@@ -661,7 +741,7 @@ func generateVM(r *registry.Registry, cl *Cluster, n int) *VM {
 		vm.Disks = append(vm.Disks, &VDisk{
 			Path:       fmt.Sprintf("%s/%s.vmdk", vm.NamespaceUUID, file),
 			Device:     fmt.Sprintf("scsi0:%d", di),
-			CapacityKB: 40 * 1024 * 1024,
+			CapacityKB: cl.DiskKB,
 		})
 	}
 	return vm

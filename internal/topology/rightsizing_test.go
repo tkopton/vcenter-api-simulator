@@ -50,8 +50,8 @@ func TestRightsizingRoles(t *testing.T) {
 				t.Errorf("%s oversized but %d vCPU %d MB", vm.Name, vm.CPUs, vm.MemoryMB)
 			}
 		case scenario.RoleOldSnapshot:
-			if vm.SnapshotAge < 30*24*time.Hour || vm.SnapshotAge > 40*24*time.Hour || vm.SnapshotBytes < snapshotMinGB<<30 || vm.SnapshotBytes > snapshotMaxGB<<30 || vm.SnapshotName == "" {
-				t.Errorf("%s snapshot age %v size %d name %q", vm.Name, vm.SnapshotAge, vm.SnapshotBytes, vm.SnapshotName)
+			if vm.SnapshotAge < 30*24*time.Hour || vm.SnapshotAge > 40*24*time.Hour || vm.OldSnapshotBytes < snapshotMinGB<<30 || vm.OldSnapshotBytes > snapshotMaxGB<<30 || vm.SnapshotName == "" {
+				t.Errorf("%s snapshot age %v size %d name %q", vm.Name, vm.SnapshotAge, vm.OldSnapshotBytes, vm.SnapshotName)
 			}
 		default:
 			if vm.CPUs != VMCPUs || vm.MemoryMB != VMMemoryMB || vm.SnapshotAge != 0 {

@@ -9,6 +9,7 @@ import (
 
 	"github.com/sentania/vcenter-api-simulator/internal/registry"
 	"github.com/sentania/vcenter-api-simulator/internal/scenario"
+	"github.com/sentania/vcenter-api-simulator/internal/topology"
 )
 
 // rightsizingSim is lifeScenario's two clusters with a share of every role
@@ -42,10 +43,14 @@ func TestRightsizingRolesInInventoryAndPerformance(t *testing.T) {
 			var state types.VirtualMachinePowerState
 			var snap *types.VirtualMachineSnapshotInfo
 			var files []types.VirtualMachineFileLayoutExFileInfo
+			var committed int64
 			ctx.WithLock(obj, func() {
 				cpus, mem, state, snap = obj.Config.Hardware.NumCPU, obj.Config.Hardware.MemoryMB, obj.Runtime.PowerState, obj.Snapshot
 				if obj.LayoutEx != nil {
 					files = obj.LayoutEx.File
+				}
+				if obj.Summary.Storage != nil {
+					committed = obj.Summary.Storage.Committed
 				}
 			})
 			if int(cpus) != vm.CPUs || int(mem) != vm.MemoryMB {
@@ -84,10 +89,14 @@ func TestRightsizingRolesInInventoryAndPerformance(t *testing.T) {
 				}
 				sized := false
 				for _, f := range files {
-					sized = sized || f.Size == vm.SnapshotBytes
+					sized = sized || f.Size == vm.OldSnapshotBytes
 				}
 				if !sized {
-					t.Errorf("%s: no snapshot file of %d bytes in layoutEx", vm.Name, vm.SnapshotBytes)
+					t.Errorf("%s: no snapshot file of %d bytes in layoutEx", vm.Name, vm.OldSnapshotBytes)
+				}
+				// the storage model counts the snapshot, so the datastore does too
+				if want, _, _ := topology.VMStorage(vm); vm.SnapshotBytes() != vm.OldSnapshotBytes || committed != want {
+					t.Errorf("%s: storage model has a %d byte snapshot, VM commits %d of %d", vm.Name, vm.SnapshotBytes(), committed, want)
 				}
 			case "":
 				if state != types.VirtualMachinePowerStatePoweredOn || snap != nil {

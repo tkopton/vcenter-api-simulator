@@ -28,9 +28,12 @@ type workloadNode struct {
 	cpus              int
 	cpuInstances      int // logical host processors, or VM vCPUs
 	active            bool
-	datastores        []perfRef
-	nics, disks       []string
-	capacity, used    int64 // datastore KiB
+	// A host that is connected and on but in maintenance mode is maintenance;
+	// one that is not connected or not powered on is unreachable.
+	maintenance, unreachable    bool
+	datastores                  []perfRef
+	nics, disks                 []string
+	capacity, used, provisioned int64 // datastore KiB
 	// loadCPU and loadMem are how loaded Activity says a VM's cluster looks:
 	// 1 is as built.
 	loadCPU, loadMem float64
@@ -65,6 +68,8 @@ func readPerformanceSubset(ctx *simulator.Context, selected *perfRef) *performan
 				switch o := entity.(type) {
 				case *simulator.HostSystem:
 					n.active = o.Runtime.ConnectionState == types.HostSystemConnectionStateConnected && !o.Runtime.InMaintenanceMode && o.Runtime.PowerState == types.HostSystemPowerStatePoweredOn
+					n.unreachable = o.Runtime.ConnectionState != types.HostSystemConnectionStateConnected || o.Runtime.PowerState != types.HostSystemPowerStatePoweredOn
+					n.maintenance = !n.unreachable && o.Runtime.InMaintenanceMode
 					n.cpu = int64(o.Summary.Hardware.CpuMhz) * int64(o.Summary.Hardware.NumCpuCores)
 					n.cpus = int(o.Summary.Hardware.NumCpuCores)
 					n.cpuInstances = int(o.Summary.Hardware.NumCpuThreads)
@@ -121,6 +126,7 @@ func readPerformanceSubset(ctx *simulator.Context, selected *perfRef) *performan
 				case *simulator.Datastore:
 					n.capacity = o.Summary.Capacity / 1024
 					n.used = (o.Summary.Capacity - o.Summary.FreeSpace) / 1024
+					n.provisioned = n.used + o.Summary.Uncommitted/1024
 					n.identity = strings.TrimSuffix(strings.TrimPrefix(o.Summary.Url, "ds:///vmfs/volumes/"), "/")
 				}
 			})
